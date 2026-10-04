@@ -1,336 +1,216 @@
-"""This is my first attempt at creating a virtual assistant named Jarvis. It can perform various tasks such as opening websites,
- playing music, and fetching news headlines. The assistant listens for specific wake words to activate and can remember user 
- preferences using a simple memory system."""
+"""Canonical entry point for the Jarvis AI Assistant."""
 
-"""The code is written by me with the help of ai like gpt and claude. 
-i take a challange to create a new project everyday and pot it here """
-# ===========================
-# Have a nice journey to see my code and learn from it. if you have any question then you can ask me on my email: babusinu997@gmail.com
-#  ==========================
+from __future__ import annotations
 
-import random
-import json
-import os
-import traceback
+import argparse
+from pathlib import Path
+
 import speech_recognition as sr
-import webbrowser
-import pyttsx3
-import music_library
-import requests
-import pygame
-from gtts import gTTS
 from dotenv import load_dotenv
 
+import music_library
+
+from jarvis_ai.assistant import JarvisAssistant
+from jarvis_ai.speech import Speaker
 
 
-# =========================
-# INITIALIZATION
-# =========================
-load_dotenv()
-
-recognizer = sr.Recognizer()
-
-
-newsapi = os.getenv("NEWS_API_KEY")  # Replace with your actual News API key
-
-wake_words = [
-    "hay bro",
+WAKE_WORDS = (
     "jarvis",
     "hey jarvis",
+    "hello jarvis",
     "ok jarvis",
     "wake up jarvis",
-    "hello jarvis"
-]
+)
 
-responses = [
-    "Yes boss",
-    "hukum doo",
-    "spit it out",
-    "Ready when you are",
-    "What can I do for you?",
-    "Systems online"
-]
+ACTIVATION_RESPONSE = "Yes boss, I'm listening."
 
-MEMORY_FILE = "memory.json"
-
-
-# =========================
-# MEMORY SYSTEM
-# =========================
-
-def initialize_memory():
-
-    if not os.path.exists(MEMORY_FILE):
-        with open(MEMORY_FILE, "w") as file:
-            json.dump({}, file, indent=4)
-
-
-def save_memory(key, value):
-    initialize_memory()
-
-    with open(MEMORY_FILE, "r") as file:
-        memory = json.load(file)
-
-    memory[key] = value
-
-    with open(MEMORY_FILE, "w") as file:
-        json.dump(memory, file, indent=4)
+DEMO_VOICE_LINES = (
+    "Jarvis is ready.",
+    ACTIVATION_RESPONSE,
+    "Opening YouTube.",
+    "Opening Google.",
+    "Opening Instagram.",
+    "Opening LinkedIn.",
+    "Opening Facebook.",
+    "Opening GitHub.",
+    "Opening WhatsApp.",
+    "Going to sleep mode.",
+    "Goodbye.",
+    "Voice output is working. I am ready, boss.",
+    "Pausing playback.",
+    "Resuming playback.",
+    "Going back.",
+    "Closing the current window.",
+    *(f"Playing {song}." for song in music_library.music),
+)
 
 
-def get_memory(key):
-    initialize_memory()
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="A safe, Gemini-powered voice and text assistant."
+    )
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument(
+        "--text",
+        action="store_true",
+        help="Run an interactive text chat instead of using the microphone.",
+    )
+    mode.add_argument(
+        "--command",
+        metavar="TEXT",
+        help="Process one command and exit.",
+    )
+    mode.add_argument(
+        "--voice-test",
+        action="store_true",
+        help="Speak one test sentence and exit.",
+    )
+    mode.add_argument(
+        "--prepare-voice-cache",
+        action="store_true",
+        help="Pre-generate common spoken responses for low-latency demos.",
+    )
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="Describe actions without opening websites or calling NewsAPI.",
+    )
+    parser.add_argument(
+        "--mute",
+        action="store_true",
+        help="Print responses without speaking them aloud.",
+    )
+    return parser
 
-    with open(MEMORY_FILE, "r") as file:
-        memory = json.load(file)
 
-    return memory.get(key)
-
-
-# =========================
-# TEXT TO SPEECH
-# =========================
-
-def speak_old(text):
-    engine = pyttsx3.init()
-    engine.say(text)
-    engine.runAndWait()
+def respond(assistant: JarvisAssistant, speaker: Speaker, command: str) -> None:
+    result = assistant.handle(command)
+    print(f"Jarvis [{result.source}]: {result.message}")
+    speaker.say(result.message)
 
 
-pygame.mixer.init()
-
-
-def speak(text):
-
-    temp_file = "temp.mp3"
-
-    try:
-        tts = gTTS(text=text, lang="en")
-        tts.save(temp_file)
-
-        pygame.mixer.music.load(temp_file)
-        pygame.mixer.music.play()
-
-        while pygame.mixer.music.get_busy():
-            pygame.time.Clock().tick(10)
-
-    finally:
+def run_text_mode(assistant: JarvisAssistant, speaker: Speaker) -> None:
+    print("Jarvis text mode is ready. Type 'exit' to stop.")
+    while True:
         try:
-            pygame.mixer.music.unload()
-        except pygame.error:
-            pass
+            command = input("You: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            break
 
-        if os.path.exists(temp_file):
-            os.remove(temp_file)
-
-
-# =========================
-# COMMAND PROCESSOR
-# =========================
-
-def process_command(command):
-    command = command.lower().strip()
-
-    # -------------------------
-    # MEMORY COMMANDS
-    # -------------------------
-
-    if "what is my name" in command:
-        name = get_memory("name")
-
-        if name:
-            speak(f"Your name is {name}")
-        else:
-            speak("I do not know your name yet, boss.")
-
-    elif command.startswith("remember my name is "):
-        name = command.replace("remember my name is ", "", 1).strip()
-
-        if name:
-            save_memory("name", name)
-            speak(f"I will remember your name as {name}, boss.")
-
-    elif "what is my favorite song" in command:
-        song = get_memory("favorite_song")
-
-        if song:
-            speak(f"Your favorite song is {song}")
-        else:
-            speak("You have not told me your favorite song yet.")
-
-    elif command.startswith("remember my favorite song is "):
-        song = command.replace(
-            "remember my favorite song is ", "" ,1).strip()
-
-        if song:
-            save_memory("favorite_song", song)
-            speak(f"I will remember your favorite song as {song}.")
-
-    # -------------------------
-    # WEBSITE COMMANDS
-    # -------------------------
-
-    elif "open youtube" in command:
-        webbrowser.open("https://www.youtube.com")
-        speak("Opening YouTube")
-
-    elif "open google" in command:
-        webbrowser.open("https://www.google.com")
-        speak("Opening Google")
-
-    elif "open facebook" in command:
-        webbrowser.open("https://www.facebook.com")
-        speak("Opening Facebook")
-
-    elif "open instagram" in command:
-        webbrowser.open("https://www.instagram.com")
-        speak("Opening Instagram")
-
-    elif "open linkedin" in command:
-        webbrowser.open("https://www.linkedin.com")
-        speak("Opening LinkedIn")
-
-    # -------------------------
-    # MUSIC COMMAND
-    # -------------------------
-
-    elif command.startswith("play "):
-        song = command.replace("play ", "", 1).strip()
-
-        if song in music_library.music:
-            link = music_library.music[song]
-            webbrowser.open(link)
-            speak(f"Playing {song}")
-        else:
-            speak("Sorry boss, that song is not in your music library.")
-
-    # -------------------------
-    # NEWS COMMAND
-    # -------------------------
-
-    elif "news" in command:
-        try:
-            response = requests.get(
-                f"https://newsapi.org/v2/top-headlines"
-                f"?country=in&apiKey={newsapi}",
-                timeout=10
-            )
-
-            if response.status_code == 200:
-                data = response.json()
-                articles = data.get("articles", [])
-
-                if not articles:
-                    speak("Sorry boss, no news was found.")
-                    return
-
-                for article in articles[:5]:
-                    title = article.get("title")
-
-                    if title:
-                        speak(title)
-            else:
-                speak("Sorry boss, I could not fetch the news.")
-
-        except requests.RequestException:
-            speak("There was a problem connecting to the news service.")
-
-    # -------------------------
-    # UNKNOWN COMMAND
-    # -------------------------
-
-    else:
-        speak("I am sorry, I cannot handle that command yet.")
+        if not command:
+            continue
+        if command.lower() in {"exit", "quit", "shutdown"}:
+            break
+        respond(assistant, speaker, command)
 
 
-# =========================
-# MAIN PROGRAM
-# =========================
-
-if __name__ == "__main__":
-
-    initialize_memory()
-
-    speak("Initializing Jarvis...")
-
-    active = False
-
+def listen(
+    recognizer: sr.Recognizer,
+    *,
+    timeout: int,
+    phrase_time_limit: int,
+) -> str:
     with sr.Microphone() as source:
-        print("Calibrating microphone for background noise...")
+        audio = recognizer.listen(
+            source,
+            timeout=timeout,
+            phrase_time_limit=phrase_time_limit,
+        )
+    return recognizer.recognize_google(audio).strip()
+
+
+def run_voice_mode(assistant: JarvisAssistant, speaker: Speaker) -> None:
+    recognizer = sr.Recognizer()
+    print("Calibrating microphone for background noise...")
+    with sr.Microphone() as source:
         recognizer.adjust_for_ambient_noise(source, duration=1)
 
-    print("Jarvis is ready.")
+    # Allow natural pauses inside a command. The previous 0.55-second threshold
+    # was too aggressive and could cut off a speaker before the sentence ended.
+    recognizer.pause_threshold = 1.10
+    recognizer.non_speaking_duration = 0.50
+    recognizer.phrase_threshold = 0.30
+    recognizer.operation_timeout = 8
+
+    print("Jarvis is ready. Say 'Jarvis' to activate it.")
+    speaker.say("Jarvis is ready.")
+    active = False
 
     while True:
         try:
-            # =========================
-            # SLEEP MODE
-            # =========================
-
             if not active:
                 print("Listening for wake word...")
-
-                with sr.Microphone() as source:
-                    audio = recognizer.listen(
-                        source,
-                        timeout=5,
-                        phrase_time_limit=4
-                    )
-
-                word = recognizer.recognize_google(audio)
-
-                print("You said:", word)
-
-                if any(
-                    wake_word in word.lower()
-                    for wake_word in wake_words
-                ):
+                heard = listen(recognizer, timeout=5, phrase_time_limit=4)
+                print(f"Heard: {heard}")
+                if any(wake_word in heard.lower() for wake_word in WAKE_WORDS):
                     active = True
-                    speak(random.choice(responses))
+                    print(f"Jarvis: {ACTIVATION_RESPONSE}")
+                    speaker.say(ACTIVATION_RESPONSE)
+                continue
 
-            # =========================
-            # ACTIVE MODE
-            # =========================
+            print("Listening for command...")
+            command = listen(recognizer, timeout=7, phrase_time_limit=15)
+            print(f"Command: {command}")
 
+            if command.lower() == "sleep":
+                active = False
+                speaker.say("Going to sleep mode.")
+            elif command.lower() in {"exit", "quit", "shutdown"}:
+                speaker.say("Goodbye.")
+                break
             else:
-                print("Listening for command...")
-
-                with sr.Microphone() as source:
-                    audio = recognizer.listen(
-                        source,
-                        timeout=5,
-                        phrase_time_limit=7
-                    )
-
-                command = recognizer.recognize_google(audio)
-
-                print("Command:", command)
-
-                command = command.lower().strip()
-
-                if command == "sleep":
-                    active = False
-                    speak("Going to sleep mode")
-
-                elif command in ["exit", "quit", "shutdown"]:
-                    speak("Goodbye boss")
-                    break
-
-                else:
-                    process_command(command)
+                respond(assistant, speaker, command)
 
         except sr.WaitTimeoutError:
             print("No speech detected.")
-
         except sr.UnknownValueError:
-            print("Sorry, I could not understand the audio.")
-
-        except sr.RequestError:
-            print("Speech recognition service is unavailable.")
-
+            print("I could not understand the audio.")
+        except sr.RequestError as error:
+            print(f"Speech recognition is unavailable: {error}")
         except KeyboardInterrupt:
             print("\nJarvis stopped.")
             break
 
-        except Exception:
-            traceback.print_exc()
-''' note kario ak bar command run hone ke baad firse tujhe jarvis bolke start karne padega then j bhi bol sata hei '''
+
+def main() -> None:
+    load_dotenv()
+    args = build_parser().parse_args()
+    speaker = Speaker(enabled=not args.mute)
+
+    if args.prepare_voice_cache:
+        generated, cached, failed = speaker.prepare(DEMO_VOICE_LINES)
+        print(
+            "Voice cache result: "
+            f"{generated} generated, {cached} already cached, {failed} not cached."
+        )
+        return
+
+    if args.voice_test:
+        message = "Voice output is working. I am ready, boss."
+        print(f"Jarvis: {message}")
+        speaker.say(message)
+        return
+
+    # Keep preferences in the project's original memory.json. This is the same
+    # file used by the earlier version of Jarvis, so saved names and songs are
+    # not split between two different memory locations.
+    project_dir = Path(__file__).resolve().parent
+    assistant = JarvisAssistant(data_dir=project_dir, dry_run=args.dry_run)
+
+    if not assistant.ai_available:
+        print(
+            "Gemini is not configured. Built-in commands still work; "
+            "add GEMINI_API_KEY to .env to enable natural-language routing."
+        )
+
+    if args.command:
+        respond(assistant, speaker, args.command)
+    elif args.text:
+        run_text_mode(assistant, speaker)
+    else:
+        run_voice_mode(assistant, speaker)
+
+
+if __name__ == "__main__":
+    main()
