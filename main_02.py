@@ -34,12 +34,14 @@ DEMO_VOICE_LINES = (
     "Opening Facebook.",
     "Opening GitHub.",
     "Opening WhatsApp.",
+    "Opening Telegram",
     "Going to sleep mode.",
     "Goodbye.",
     "Voice output is working. I am ready, boss.",
     "Pausing playback.",
     "Resuming playback.",
     "Going back.",
+    "Closing the current browser tab.",
     "Closing the current window.",
     *(f"Playing {song}." for song in music_library.music),
 )
@@ -117,7 +119,7 @@ def listen(
             timeout=timeout,
             phrase_time_limit=phrase_time_limit,
         )
-    return recognizer.recognize_google(audio).strip()
+    return recognizer.recognize_google(audio, language="en-IN").strip()
 
 
 def run_voice_mode(assistant: JarvisAssistant, speaker: Speaker) -> None:
@@ -128,10 +130,10 @@ def run_voice_mode(assistant: JarvisAssistant, speaker: Speaker) -> None:
 
     # Allow natural pauses inside a command. The previous 0.55-second threshold
     # was too aggressive and could cut off a speaker before the sentence ended.
-    recognizer.pause_threshold = 1.10
-    recognizer.non_speaking_duration = 0.50
-    recognizer.phrase_threshold = 0.30
-    recognizer.operation_timeout = 8
+    recognizer.pause_threshold = 1.35
+    recognizer.non_speaking_duration = 0.65
+    recognizer.phrase_threshold = 0.25
+    recognizer.operation_timeout = 12
 
     print("Jarvis is ready. Say 'Jarvis' to activate it.")
     speaker.say("Jarvis is ready.")

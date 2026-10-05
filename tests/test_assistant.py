@@ -7,6 +7,7 @@ from unittest.mock import Mock, call, patch
 from pathlib import Path
 
 from jarvis_ai.actions import SITE_ALIASES, ActionExecutor
+from jarvis_ai.assistant import JarvisAssistant
 from jarvis_ai.memory import MemoryStore
 from jarvis_ai.models import CommandDecision
 from jarvis_ai.router import GeminiRouter, RuleRouter
@@ -15,35 +16,35 @@ from jarvis_ai.system_control import WindowsMediaController
 
 
 class FakeInteraction:
-    output_text = (
+    text = (
         '{"action":"open_website","target":"linkedin","value":null,'
         '"spoken_response":""}'
     )
 
 
-class FakeInteractions:
+class FakeModels:
     def __init__(self) -> None:
         self.last_request = None
 
-    def create(self, **request):
+    def generate_content(self, **request):
         self.last_request = request
         return FakeInteraction()
 
 
 class FakeGeminiClient:
     def __init__(self) -> None:
-        self.interactions = FakeInteractions()
+        self.models = FakeModels()
 
 
-class SlowInteractions:
-    def create(self, **_request):
+class SlowModels:
+    def generate_content(self, **_request):
         time.sleep(0.2)
         return FakeInteraction()
 
 
 class SlowGeminiClient:
     def __init__(self) -> None:
-        self.interactions = SlowInteractions()
+        self.models = SlowModels()
 
 
 class RuleRouterTests(unittest.TestCase):
@@ -61,6 +62,12 @@ class RuleRouterTests(unittest.TestCase):
         self.assertIsNotNone(decision)
         self.assertEqual(decision.action, "open_website")
         self.assertEqual(decision.target, "whatsapp")
+
+    def test_routes_telegram_locally(self) -> None:
+        decision = self.router.route("open Telegram")
+        self.assertIsNotNone(decision)
+        self.assertEqual(decision.action, "open_website")
+        self.assertEqual(decision.target, "telegram")
 
     def test_routes_web_search(self) -> None:
         decision = self.router.route("search for voice assistant architecture")
@@ -87,6 +94,30 @@ class RuleRouterTests(unittest.TestCase):
         decision = self.router.route("play my favorite song")
         self.assertIsNotNone(decision)
         self.assertEqual(decision.action, "play_favorite_song")
+
+    def test_routes_start_day_and_reminders_locally(self) -> None:
+        self.assertEqual(
+            self.router.route("start my day").action,
+            "start_my_day",
+        )
+        reminder = self.router.route("remind me to submit my application")
+        self.assertEqual(reminder.action, "add_reminder")
+        self.assertEqual(reminder.target, "submit my application")
+        self.assertEqual(
+            self.router.route("read my reminders").action,
+            "list_reminders",
+        )
+
+        spoken_reminder = self.router.route("set a reminder to call mom")
+        self.assertEqual(spoken_reminder.action, "add_reminder")
+        self.assertEqual(spoken_reminder.target, "call mom")
+
+    def test_routes_exit_and_sleep_locally_without_gemini(self) -> None:
+        for command in ("exit", "sleep", "stop listening", "go to sleep"):
+            with self.subTest(command=command):
+                decision = self.router.route(command)
+                self.assertIsNotNone(decision)
+                self.assertEqual(decision.action, "sleep_mode")
 
     def test_routes_natural_favorite_song_memory_variations_locally(self) -> None:
         commands = (
@@ -118,10 +149,15 @@ class RuleRouterTests(unittest.TestCase):
     def test_routes_media_and_back_commands(self) -> None:
         self.assertEqual(self.router.route("ruk jao").action, "media_pause")
         self.assertEqual(self.router.route("play").action, "media_play")
-        self.assertEqual(self.router.route("go back").action, "close_window")
+        self.assertEqual(self.router.route("go back").action, "navigate_back")
         self.assertEqual(
             self.router.route("previous page").action,
             "navigate_back",
+        )
+        self.assertEqual(self.router.route("close this tab").action, "close_tab")
+        self.assertEqual(
+            self.router.route("close this window").action,
+            "close_window",
         )
 
     def test_routes_news_variations_locally(self) -> None:
@@ -172,13 +208,9 @@ class GeminiRouterTests(unittest.TestCase):
 
         self.assertEqual(decision.action, "open_website")
         self.assertEqual(decision.target, "linkedin")
-        self.assertEqual(fake_client.interactions.last_request["model"], router.model)
+        self.assertEqual(fake_client.models.last_request["model"], router.model)
         self.assertEqual(
-            fake_client.interactions.last_request["timeout"],
-            min(router.timeout_seconds, 5.0),
-        )
-        self.assertEqual(
-            fake_client.interactions.last_request["response_format"]["mime_type"],
+            fake_client.models.last_request["config"].response_mime_type,
             "application/json",
         )
 
@@ -198,6 +230,24 @@ class GeminiRouterTests(unittest.TestCase):
         self.assertLess(time.perf_counter() - start, 0.15)
 
 
+class VoiceTranscriptSelectionTests(unittest.TestCase):
+    def test_prefers_known_safe_command_from_google_alternatives(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assistant = JarvisAssistant(Path(directory), dry_run=True)
+            selected = assistant.select_voice_transcript(
+                ["open you to", "open YouTube"]
+            )
+            self.assertEqual(selected, "open YouTube")
+
+    def test_does_not_promote_destructive_alternative(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            assistant = JarvisAssistant(Path(directory), dry_run=True)
+            selected = assistant.select_voice_transcript(
+                ["clothes this top", "close this tab"]
+            )
+            self.assertEqual(selected, "clothes this top")
+
+
 class ActionExecutorTests(unittest.TestCase):
     def setUp(self) -> None:
         self.temp_dir = tempfile.TemporaryDirectory()
@@ -212,6 +262,15 @@ class ActionExecutorTests(unittest.TestCase):
             CommandDecision(action="open_website", target="unknown")
         )
         self.assertIn("approved list", result)
+
+    def test_telegram_opens_the_official_web_app(self) -> None:
+        with patch.object(self.executor, "_open") as mock_open:
+            result = self.executor.execute(
+                CommandDecision(action="open_website", target="telegram")
+            )
+
+        self.assertEqual(result, "Opening Telegram.")
+        mock_open.assert_called_once_with("https://web.telegram.org/k/")
 
     def test_remembers_and_recalls_value(self) -> None:
         self.executor.execute(
@@ -239,6 +298,7 @@ class ActionExecutorTests(unittest.TestCase):
         controller = Mock()
         controller.toggle_playback.return_value = True
         controller.go_back.return_value = True
+        controller.close_tab.return_value = True
         controller.close_window.return_value = True
         executor = ActionExecutor(
             self.executor.memory,
@@ -259,11 +319,16 @@ class ActionExecutorTests(unittest.TestCase):
             "Going back.",
         )
         self.assertEqual(
+            executor.execute(CommandDecision(action="close_tab")),
+            "Closing the current browser tab.",
+        )
+        self.assertEqual(
             executor.execute(CommandDecision(action="close_window")),
             "Closing the current window.",
         )
         self.assertEqual(controller.toggle_playback.call_count, 2)
         controller.go_back.assert_called_once_with()
+        controller.close_tab.assert_called_once_with()
         controller.close_window.assert_called_once_with()
 
     def test_news_dry_run_does_not_call_network(self) -> None:
@@ -298,6 +363,54 @@ class ActionExecutorTests(unittest.TestCase):
             weather_service.current_summary.call_args_list,
             [call("Mumbai"), call("Pune")],
         )
+
+    def test_start_my_day_combines_existing_features_in_dry_run(self) -> None:
+        self.executor.memory.save("name", "Sinu")
+        self.executor.memory.save("favorite_song", "Skyfall")
+        self.executor.reminders.add("Submit the hackathon application")
+
+        result = self.executor.execute(CommandDecision(action="start_my_day"))
+
+        self.assertIn("Good morning, Sinu", result)
+        self.assertIn("Dry run: I would fetch the current weather", result)
+        self.assertIn("Dry run: I would fetch the latest Indian news", result)
+        self.assertIn("Submit the hackathon application", result)
+        self.assertIn("I would open WhatsApp and LinkedIn", result)
+        self.assertIn("I would play skyfall", result)
+
+    def test_start_my_day_can_defer_web_actions_until_after_briefing(self) -> None:
+        self.executor.memory.save("name", "Sinu")
+        self.executor.memory.save("favorite_song", "Skyfall")
+
+        with patch.object(self.executor, "_open") as mock_open:
+            briefing = self.executor.execute(
+                CommandDecision(action="start_my_day"),
+                defer_start_day_actions=True,
+            )
+            mock_open.assert_not_called()
+
+            completion = self.executor.complete_start_my_day()
+
+        self.assertIn("Good morning, Sinu", briefing)
+        self.assertIn("After this briefing", briefing)
+        self.assertNotIn("I would open WhatsApp", briefing)
+        self.assertIn("I would open WhatsApp and LinkedIn", completion)
+        self.assertIn("I would play skyfall", completion)
+        self.assertEqual(mock_open.call_count, 3)
+
+    def test_adds_and_reads_reminders(self) -> None:
+        saved = self.executor.execute(
+            CommandDecision(action="add_reminder", target="Practice my pitch")
+        )
+        listed = self.executor.execute(CommandDecision(action="list_reminders"))
+
+        self.assertEqual(saved, "Reminder saved: Practice my pitch.")
+        self.assertIn("Practice my pitch", listed)
+
+    def test_sleep_mode_has_a_short_response(self) -> None:
+        result = self.executor.execute(CommandDecision(action="sleep_mode"))
+
+        self.assertEqual(result, "Going to sleep.")
 
     @patch.dict("os.environ", {"NEWS_API_KEY": "test-key"})
     @patch("jarvis_ai.actions.requests.get")
@@ -416,6 +529,22 @@ class SpeakerTests(unittest.TestCase):
 
 
 class WindowsMediaControllerTests(unittest.TestCase):
+    def test_close_tab_sends_ctrl_w_without_closing_browser_window(self) -> None:
+        controller = WindowsMediaController()
+        with patch.object(controller, "_key") as mock_key:
+            result = controller.close_tab()
+
+        self.assertTrue(result)
+        self.assertEqual(
+            mock_key.call_args_list,
+            [
+                call(controller.VK_CONTROL),
+                call(controller.VK_W),
+                call(controller.VK_W, key_up=True),
+                call(controller.VK_CONTROL, key_up=True),
+            ],
+        )
+
     def test_close_window_sends_alt_f4_without_touching_the_real_window(self) -> None:
         controller = WindowsMediaController()
         with patch.object(controller, "_key") as mock_key:

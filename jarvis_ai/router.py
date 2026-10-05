@@ -9,6 +9,7 @@ import threading
 from collections.abc import Iterable
 
 from google import genai
+from google.genai import types
 
 from .models import CommandDecision
 
@@ -24,14 +25,90 @@ class RuleRouter:
         self,
         site_aliases: dict[str, str],
         known_songs: Iterable[str] = (),
+        contact_aliases: dict[str, str] | None = None,
     ) -> None:
         self.site_aliases = site_aliases
         self.known_songs = {
             " ".join(song.lower().split()): song
             for song in known_songs
         }
+        self.contact_aliases = contact_aliases or {}
+
+    def _route_whatsapp_message(
+        self,
+        raw_command: str,
+    ) -> CommandDecision | None:
+        """Parse a contact-first WhatsApp request without sending anything."""
+
+        command = " ".join(raw_command.strip().split())
+        prefix_patterns = (
+            r"^(?:please\s+)?(?:send|write)(?:\s+a)?(?:\s+whatsapp)?"
+            r"\s+message\s+to\s+(.+)$",
+            r"^(?:please\s+)?(?:message|text)\s+(.+)$",
+        )
+
+        payload: str | None = None
+        for pattern in prefix_patterns:
+            match = re.fullmatch(pattern, command, flags=re.IGNORECASE)
+            if match:
+                payload = match.group(1).strip()
+                break
+        if payload is None:
+            return None
+
+        aliases = sorted(self.contact_aliases, key=len, reverse=True)
+        for alias in aliases:
+            contact_match = re.match(
+                rf"^{re.escape(alias)}(?=$|[\s,:-])",
+                payload,
+                flags=re.IGNORECASE,
+            )
+            if not contact_match:
+                continue
+
+            message = payload[contact_match.end():].lstrip(" ,:-")
+            message = re.sub(
+                r"^(?:saying|says|that\s+says|with\s+(?:the\s+)?message|message|that)"
+                r"\s*[:,-]?\s*",
+                "",
+                message,
+                count=1,
+                flags=re.IGNORECASE,
+            ).strip()
+            return CommandDecision(
+                action="prepare_whatsapp_message",
+                target=self.contact_aliases[alias],
+                value=message or None,
+            )
+
+        # Also understand: "send message Hello, I am coming to Bablu" and the
+        # common spoken variation "send message to Hello ... to Bablu".
+        for alias in aliases:
+            trailing_contact = re.search(
+                rf"\s+to\s+{re.escape(alias)}$",
+                payload,
+                flags=re.IGNORECASE,
+            )
+            if trailing_contact:
+                message = payload[:trailing_contact.start()].strip(" ,:-")
+                return CommandDecision(
+                    action="prepare_whatsapp_message",
+                    target=self.contact_aliases[alias],
+                    value=message or None,
+                )
+
+        requested_name, _, message = payload.partition(" ")
+        return CommandDecision(
+            action="prepare_whatsapp_message",
+            target=requested_name,
+            value=message.strip() or None,
+        )
 
     def route(self, raw_command: str) -> CommandDecision | None:
+        whatsapp_message = self._route_whatsapp_message(raw_command)
+        if whatsapp_message is not None:
+            return whatsapp_message
+
         command = " ".join(raw_command.lower().split())
         command = re.sub(r"[.!?]+$", "", command).strip()
 
@@ -109,6 +186,50 @@ class RuleRouter:
             return CommandDecision(action="play_favorite_song")
 
         if command in {
+            "start my day",
+            "begin my day",
+            "good morning jarvis",
+            "give me my morning briefing",
+            "morning briefing",
+            "give me my daily briefing",
+            "daily briefing",
+        }:
+            return CommandDecision(action="start_my_day")
+
+        reminder_match = re.fullmatch(
+            r"(?:remind me to|add (?:a )?reminder(?: to)?|set (?:a )?reminder(?: to)?|remember to) (.+)",
+            command,
+        )
+        if reminder_match:
+            return CommandDecision(
+                action="add_reminder",
+                target=reminder_match.group(1).strip(),
+            )
+
+        if command in {
+            "what are my reminders",
+            "tell me my reminders",
+            "read my reminders",
+            "list my reminders",
+            "my reminders",
+        }:
+            return CommandDecision(action="list_reminders")
+
+        if command in {
+            "exit",
+            "quit",
+            "sleep",
+            "sleep mode",
+            "go to sleep",
+            "stop listening",
+            "stop voice mode",
+            "turn off voice mode",
+            "jarvis sleep",
+            "shutdown jarvis",
+        }:
+            return CommandDecision(action="sleep_mode")
+
+        if command in {
             "pause",
             "pause music",
             "pause the music",
@@ -142,10 +263,30 @@ class RuleRouter:
             "peeche jao",
             "wapas jao",
         }:
-            return CommandDecision(action="close_window")
+            return CommandDecision(action="navigate_back")
 
         if command in {"previous page", "browser back", "navigate back"}:
             return CommandDecision(action="navigate_back")
+
+        if command in {
+            "close tab",
+            "close this tab",
+            "close current tab",
+            "close page",
+            "close this page",
+            "close webpage",
+            "cancel this page",
+            "tab band karo",
+            "page band karo",
+        }:
+            return CommandDecision(action="close_tab")
+
+        if command in {
+            "close window",
+            "close this window",
+            "close current window",
+        }:
+            return CommandDecision(action="close_window")
 
         if re.search(r"\b(?:news|headlines)\b", command) or command in {
             "aaj ki khabar",
@@ -244,7 +385,7 @@ class GeminiRouter:
 
     def __init__(self) -> None:
         self.api_key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY")
-        self.model = os.getenv("GEMINI_MODEL", "gemini-3.8-flash")
+        self.model = os.getenv("GEMINI_MODEL", "gemini-3.5-flash-lite")
         self.timeout_seconds = float(os.getenv("GEMINI_TIMEOUT_SECONDS", "5"))
         self._client = genai.Client(api_key=self.api_key) if self.api_key else None
 
@@ -265,41 +406,20 @@ class GeminiRouter:
         sites = ", ".join(sorted(allowed_sites))
         songs = ", ".join(sorted(known_songs)) or "none"
         prompt = f"""
-You are the intent router for a desktop voice assistant. Convert the user's
-request into exactly one safe structured action. Never claim that an action
-has already happened. Do not create actions outside the schema.
-
-Allowed website targets: {sites}
-Known local song targets: {songs}
-
-Routing rules:
-- open_website: only when the target exactly matches an allowed website key.
-- web_search: for requests to search the web; target is only the search query.
-- play_song: only for a known local song target.
-- play_favorite_song: when the user asks to play the saved favorite song.
-- media_pause: when the user wants current audio or video playback paused.
-- media_play: when the user wants current audio or video playback resumed.
-- navigate_back: when the user asks the foreground app or browser to go back.
-- close_window: when the user explicitly asks to close the foreground window.
-- get_news: for current news requests.
-- get_time: for the current local computer time; target is empty.
-- get_date: for the current local computer date; target is empty.
-- get_weather: for weather or rain questions; target is the city when provided.
-- remember: target is a short memory key and value is the information to save.
-- recall: target is a short memory key.
-- chat: answer harmless general conversation in at most two short sentences.
-- unsupported: requests involving arbitrary programs, files, credentials,
-  purchases, messages, system settings, code execution, or unclear intent.
-
-For chat and unsupported, put the response in spoken_response. Keep every
-spoken_response concise and honest.
-
-User request: {command!r}
+Route one desktop voice request to exactly one schema action. Never claim an
+action happened. For open_website, target must be one of: {sites}.
+For play_song, target must be one of: {songs}. For web_search, target is only
+the search query; for get_weather, target is only the city. Use chat for a
+harmless general question and answer it in spoken_response in at most two
+short sentences. Use unsupported for unclear requests or arbitrary programs,
+files, credentials, purchases, messages, system settings, or code execution.
+For chat and unsupported, always provide a concise spoken_response.
+Request: {command!r}
 """.strip()
 
         try:
             interaction = self._request_with_deadline(prompt)
-            return CommandDecision.model_validate_json(interaction.output_text)
+            return CommandDecision.model_validate_json(interaction.text)
         except Exception as error:
             raise GeminiRoutingError(str(error)) from error
 
@@ -316,15 +436,13 @@ User request: {command!r}
 
         def request() -> None:
             try:
-                result = self._client.interactions.create(
+                result = self._client.models.generate_content(
                     model=self.model,
-                    input=prompt,
-                    timeout=min(self.timeout_seconds, 5.0),
-                    response_format={
-                        "type": "text",
-                        "mime_type": "application/json",
-                        "schema": CommandDecision.model_json_schema(),
-                    },
+                    contents=prompt,
+                    config=types.GenerateContentConfig(
+                        response_mime_type="application/json",
+                        response_schema=CommandDecision,
+                    ),
                 )
                 result_queue.put((True, result))
             except Exception as error:

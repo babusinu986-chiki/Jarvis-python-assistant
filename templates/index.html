@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#07111f">
+    <title>Jarvis AI Assistant</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/dashboard.css') }}">
+  </head>
+  <body>
+    <div class="ambient ambient-one"></div>
+    <div class="ambient ambient-two"></div>
+
+    <main class="app-shell">
+      <header class="topbar">
+        <a class="brand" href="#" aria-label="Jarvis home">
+          <span class="brand-mark" aria-hidden="true">J</span>
+          <span>
+            <strong>JARVIS</strong>
+            <small>Personal AI assistant</small>
+          </span>
+        </a>
+
+        <div class="topbar-center" aria-live="polite">
+          <span id="statusDot" class="status-dot ready"></span>
+          <span id="statusText">Ready</span>
+        </div>
+
+        <div class="clock-block">
+          <strong id="liveTime">--:--</strong>
+          <small id="liveDate">Loading date</small>
+        </div>
+      </header>
+
+      <section class="workspace">
+        <section class="assistant-panel" aria-label="Jarvis conversation">
+          <div class="hero-row">
+            <div>
+              <p class="eyebrow">VOICE-FIRST PRODUCTIVITY</p>
+              <h1>How can I help you?</h1>
+              <p class="hero-copy">
+                Speak naturally or type a command. Jarvis will choose a safe local
+                action first and use Gemini only when needed.
+              </p>
+            </div>
+            <button id="startDayHero" class="routine-button" type="button">
+              <span class="routine-icon" aria-hidden="true">☀</span>
+              <span><small>Morning routine</small>Start my day</span>
+            </button>
+          </div>
+
+          <div id="conversation" class="conversation" aria-live="polite">
+            <article class="message assistant-message">
+              <div class="avatar">j</div>
+              <div>
+                <span class="message-label">Jarvis</span>
+                <p>
+                  I’m ready. Try “Start my day”, “Weather in Goa”, or
+                  “Remind me to practice my pitch.”
+                </p>
+              </div>
+            </article>
+          </div>
+
+          <div class="suggestion-row" aria-label="Suggested commands">
+            <button class="suggestion" data-command="start my day">Start my day</button>
+            <button class="suggestion" data-command="weather in Goa">Goa weather</button>
+            <button class="suggestion" data-command="today's news">Latest news</button>
+            <button class="suggestion" data-command="play my favorite song">Play favorite</button>
+          </div>
+
+          <form id="commandForm" class="composer">
+            <button
+              id="micButton"
+              class="icon-button mic-button"
+              type="button"
+              aria-label="Start continuous voice input"
+              aria-pressed="false"
+              title="Start continuous voice input"
+            >
+              <span aria-hidden="true">●</span>
+            </button>
+            <label class="sr-only" for="commandInput">Jarvis command</label>
+            <input
+              id="commandInput"
+              name="command"
+              type="text"
+              maxlength="500"
+              autocomplete="off"
+              placeholder="Ask Jarvis or type a command..."
+            >
+            <button id="sendButton" class="send-button" type="submit">
+              Send
+              <span aria-hidden="true">→</span>
+            </button>
+          </form>
+
+          <div class="composer-footer">
+            <span id="voiceSupport">Checking microphone support…</span>
+            <label class="voice-toggle">
+              <input id="speakReplies" type="checkbox" checked>
+              <span>Speak replies</span>
+            </label>
+          </div>
+        </section>
+
+        <aside class="side-panel" aria-label="Jarvis controls">
+          <section class="card profile-card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">SYSTEM</p>
+                <h2>Assistant status</h2>
+              </div>
+              <span id="connectionBadge" class="badge">Checking</span>
+            </div>
+            <dl class="system-grid">
+              <div><dt>Gemini</dt><dd id="geminiStatus">Checking</dd></div>
+              <div><dt>Weather city</dt><dd id="defaultCity">—</dd></div>
+              <div><dt>Voice input</dt><dd id="voiceStatus">—</dd></div>
+              <div><dt>Mode</dt><dd>Local dashboard</dd></div>
+            </dl>
+          </section>
+
+          <section class="card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">QUICK ACTIONS</p>
+                <h2>One-tap commands</h2>
+              </div>
+            </div>
+            <div class="action-grid">
+              <button data-command="what time is it"><span>◷</span>Time</button>
+              <button data-command="what is today's date"><span>□</span>Date</button>
+              <button data-command="open WhatsApp"><span>◎</span>WhatsApp</button>
+              <button data-command="open LinkedIn"><span>in</span>LinkedIn</button>
+              <button data-command="read my reminders"><span>✓</span>Reminders</button>
+              <button data-command="today's news"><span>≡</span>News</button>
+            </div>
+          </section>
+
+          <section class="card reminder-card">
+            <div class="card-heading">
+              <div>
+                <p class="eyebrow">MEMORY</p>
+                <h2>Reminders</h2>
+              </div>
+              <span id="reminderCount" class="count">0</span>
+            </div>
+            <form id="reminderForm" class="reminder-form">
+              <label class="sr-only" for="reminderInput">New reminder</label>
+              <input
+                id="reminderInput"
+                type="text"
+                maxlength="300"
+                placeholder="Add a reminder..."
+              >
+              <button type="submit" aria-label="Add reminder">+</button>
+            </form>
+            <ul id="reminderList" class="reminder-list">
+              <li class="empty-state">No reminders saved yet.</li>
+            </ul>
+          </section>
+        </aside>
+      </section>
+    </main>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="{{ url_for('static', filename='js/dashboard.js') }}" defer></script>
+  </body>
+</html>

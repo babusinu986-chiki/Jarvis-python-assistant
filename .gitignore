@@ -217,6 +217,13 @@ __marimo__/
 # Jarvis local state and generated audio
 data/
 temp.mp3
+contacts.json
+
+# Generated guides and dashboard preview images are local-only.
+output/
+*.pdf
+tmp/*.png
+tmp/pdfs/*.png
 
 # Streamlit
 .streamlit/secrets.toml
