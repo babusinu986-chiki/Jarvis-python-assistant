@@ -87,6 +87,13 @@ def create_app(
     def resume_voice():
         return jsonify(dashboard_voice.resume())
 
+    @app.post("/api/voice/standby")
+    def standby_voice():
+        state = dashboard_voice.standby()
+        if not state["enabled"]:
+            return jsonify({"error": "Voice mode is not running."}), 409
+        return jsonify(state)
+
     @app.get("/api/voice/events")
     def voice_events():
         try:

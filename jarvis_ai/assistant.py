@@ -48,6 +48,7 @@ class JarvisAssistant:
             "get_date",
             "get_weather",
             "start_my_day",
+            "sleep_mode",
             "list_reminders",
             "play_favorite_song",
             "prepare_whatsapp_message",

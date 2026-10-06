@@ -155,7 +155,9 @@ def run_voice_mode(assistant: JarvisAssistant, speaker: Speaker) -> None:
             command = listen(recognizer, timeout=7, phrase_time_limit=15)
             print(f"Command: {command}")
 
-            if command.lower() == "sleep":
+            if command.lower().strip(" .!?।") in {
+                "sleep", "so jao", "so ja", "सो जाओ", "सो जा",
+            }:
                 active = False
                 speaker.say("Going to sleep mode.")
             elif command.lower() in {"exit", "quit", "shutdown"}:

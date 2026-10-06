@@ -110,7 +110,7 @@ class RuleRouter:
             return whatsapp_message
 
         command = " ".join(raw_command.lower().split())
-        command = re.sub(r"[.!?]+$", "", command).strip()
+        command = re.sub(r"[.!?।]+$", "", command).strip()
 
         name_match = re.fullmatch(r"remember my name is (.+)", command)
         if name_match:
@@ -221,6 +221,10 @@ class RuleRouter:
             "sleep",
             "sleep mode",
             "go to sleep",
+            "so jao",
+            "so ja",
+            "सो जाओ",
+            "सो जा",
             "stop listening",
             "stop voice mode",
             "turn off voice mode",

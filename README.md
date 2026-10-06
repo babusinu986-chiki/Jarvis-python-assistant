@@ -109,9 +109,18 @@ Say `back` or `go back` to navigate the foreground browser/app backward. Say
 `close tab` or `close this page` to close only the current browser tab. A full
 window is closed only by the explicit command `close window`.
 
-Say `exit`, `sleep`, or `stop listening` to turn dashboard voice mode off while
-leaving the dashboard and Flask server running. Click the microphone once to
-start listening again.
+Say `sleep`, `go to sleep`, or `सो जाओ` (`so jao`) to put dashboard voice
+mode in **standby**.
+Jarvis says goodbye and ignores ordinary commands, but keeps the
+microphone active for `Hey Jarvis`, `Hello Jarvis`, or `Okay Jarvis`. After the
+wake response, normal voice commands resume. Keep the Jarvis dashboard tab and
+Flask server running; it can listen while another tab such as YouTube is in
+front. Click the microphone while in standby to turn it fully off. Click it
+again to start normal listening. Background browser-only speech recognition
+is less reliable than the Python desktop microphone bridge. The wake response
+may be delayed if the browser throttles the background tab, and closing or
+reloading the dashboard tab stops voice mode.
+Say `exit` or `stop listening` to turn voice mode fully off instead.
 
 Run the dashboard without opening a browser automatically:
 

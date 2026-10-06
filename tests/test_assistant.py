@@ -113,7 +113,10 @@ class RuleRouterTests(unittest.TestCase):
         self.assertEqual(spoken_reminder.target, "call mom")
 
     def test_routes_exit_and_sleep_locally_without_gemini(self) -> None:
-        for command in ("exit", "sleep", "stop listening", "go to sleep"):
+        for command in (
+            "exit", "sleep", "stop listening", "go to sleep",
+            "so jao", "सो जाओ", "सो जाओ।",
+        ):
             with self.subTest(command=command):
                 decision = self.router.route(command)
                 self.assertIsNotNone(decision)

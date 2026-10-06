@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import tempfile
+import threading
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 import speech_recognition as sr
 
@@ -13,6 +15,7 @@ from jarvis_ai.dashboard_voice import (
     VOICE_PAUSE_THRESHOLD,
     VOICE_PHRASE_TIME_LIMIT,
     DashboardVoiceSession,
+    is_wake_phrase,
 )
 from web_app import create_app
 
@@ -23,23 +26,31 @@ class FakeVoiceSession:
     def __init__(self) -> None:
         self.enabled = False
         self.paused = False
+        self.standby_mode = False
 
     def status(self):
         return {
             "enabled": self.enabled,
             "paused": self.paused,
-            "state": "paused" if self.paused else ("listening" if self.enabled else "off"),
+            "standby": self.standby_mode,
+            "state": (
+                "paused" if self.paused else
+                "standby" if self.standby_mode else
+                "listening" if self.enabled else "off"
+            ),
             "latest_event_id": 1 if self.enabled else 0,
         }
 
     def start(self):
         self.enabled = True
         self.paused = False
+        self.standby_mode = False
         return self.status()
 
     def stop(self):
         self.enabled = False
         self.paused = False
+        self.standby_mode = False
         return self.status()
 
     def pause(self):
@@ -47,6 +58,11 @@ class FakeVoiceSession:
         return self.status()
 
     def resume(self):
+        self.paused = False
+        return self.status()
+
+    def standby(self):
+        self.standby_mode = self.enabled
         self.paused = False
         return self.status()
 
@@ -164,6 +180,7 @@ class DashboardApiTests(unittest.TestCase):
         events = self.client.get("/api/voice/events?after=0")
         paused = self.client.post("/api/voice/pause")
         resumed = self.client.post("/api/voice/resume")
+        standby = self.client.post("/api/voice/standby")
         stopped = self.client.post("/api/voice/stop")
 
         self.assertTrue(started.get_json()["enabled"])
@@ -173,10 +190,100 @@ class DashboardApiTests(unittest.TestCase):
         )
         self.assertTrue(paused.get_json()["paused"])
         self.assertFalse(resumed.get_json()["paused"])
+        self.assertTrue(standby.get_json()["standby"])
         self.assertFalse(stopped.get_json()["enabled"])
+
+    def test_standby_requires_running_microphone(self) -> None:
+        response = self.client.post("/api/voice/standby")
+
+        self.assertEqual(response.status_code, 409)
 
 
 class DashboardVoiceConfigurationTests(unittest.TestCase):
+    def test_listener_reopens_stream_after_transient_device_error(self) -> None:
+        class FakeMicrophone:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_args):
+                return None
+
+        session = DashboardVoiceSession()
+        session._enabled = True
+        session._stop_event = threading.Event()
+        attempts = 0
+
+        def capture(_recognizer, _generation):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise OSError("Stream closed")
+            session.stop()
+            return None
+
+        with (
+            patch("jarvis_ai.dashboard_voice.sr.Microphone", FakeMicrophone),
+            patch.object(sr.Recognizer, "adjust_for_ambient_noise"),
+            patch.object(session, "_capture_audio", side_effect=capture),
+        ):
+            session._listen_loop()
+
+        self.assertEqual(attempts, 2)
+        self.assertIn("retrying", session.events_after(0)[0]["message"])
+
+    def test_wake_phrase_variants_do_not_accept_other_commands(self) -> None:
+        for phrase in ("Hey Jarvis!", "Hello Jarvis", "Okay Jarvis", "OK Jarvis"):
+            self.assertTrue(is_wake_phrase(phrase))
+        for phrase in ("open YouTube", "Hey Jarvis open YouTube", "Jarvis news"):
+            self.assertFalse(is_wake_phrase(phrase))
+
+    def test_standby_discards_commands_and_emits_only_wake_event(self) -> None:
+        session = DashboardVoiceSession()
+        session._enabled = True
+        previous_generation = session._capture_generation
+        session.standby()
+        generation = session._capture_generation
+
+        session._handle_transcript("open YouTube", previous_generation)
+        session._handle_transcript("open YouTube", generation)
+        self.assertEqual(session.events_after(0), [])
+        self.assertTrue(session.status()["standby"])
+
+        session._handle_transcript("Hey Jarvis", generation)
+        self.assertEqual(session.events_after(0)[0]["type"], "wake")
+        self.assertTrue(session.status()["paused"])
+        self.assertFalse(session.status()["standby"])
+
+        session.resume()
+        session._handle_transcript("open YouTube", session._capture_generation)
+        self.assertEqual(session.events_after(1)[0]["transcript"], "open YouTube")
+
+    def test_stopped_microphone_cannot_emit_wake_event(self) -> None:
+        session = DashboardVoiceSession()
+        session._enabled = True
+        session.standby()
+        generation = session._capture_generation
+        session.stop()
+
+        session._handle_transcript("Hey Jarvis", generation)
+
+        self.assertEqual(session.events_after(0), [])
+        self.assertFalse(session.status()["enabled"])
+
+    def test_standby_prefers_wake_alternative(self) -> None:
+        session = DashboardVoiceSession(transcript_selector=lambda items: items[0])
+        session._enabled = True
+        session.standby()
+
+        transcript = session._select_google_transcript(
+            {"alternative": [
+                {"transcript": "hey Travis"},
+                {"transcript": "Hey Jarvis"},
+            ]}
+        )
+
+        self.assertEqual(transcript, "Hey Jarvis")
+
     def test_google_alternatives_can_be_selected_without_another_api_call(self) -> None:
         session = DashboardVoiceSession(transcript_selector=lambda items: items[-1])
         transcript = session._select_google_transcript(
@@ -186,6 +293,11 @@ class DashboardVoiceConfigurationTests(unittest.TestCase):
             ]}
         )
         self.assertEqual(transcript, "open YouTube")
+
+    def test_empty_google_result_does_not_stop_listener(self) -> None:
+        session = DashboardVoiceSession()
+
+        self.assertEqual(session._select_google_transcript([]), "")
 
     def test_recognizer_allows_natural_pauses_and_longer_commands(self) -> None:
         recognizer = sr.Recognizer()

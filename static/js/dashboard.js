@@ -28,6 +28,7 @@ let recognition;
 let recognitionActive = false;
 let recognitionStarting = false;
 let voiceModeEnabled = false;
+let voiceStandby = false;
 let commandCaptured = false;
 let voiceTranscript = "";
 let voiceCommitTimer;
@@ -37,6 +38,30 @@ let desktopVoiceAvailable = false;
 let desktopVoicePollTimer;
 let desktopVoiceEventCursor = 0;
 const completedFollowUps = new Set();
+const ACTIVATION_RESPONSE = "Yes boss, I'm listening.";
+const WAKE_PHRASES = new Set([
+  "jarvis",
+  "hey jarvis",
+  "hello jarvis",
+  "ok jarvis",
+  "okay jarvis",
+  "wake up jarvis",
+]);
+
+function isWakePhrase(transcript) {
+  const normalized = transcript.toLowerCase()
+    .replace(/[^a-z]+/g, " ").trim().replace(/\s+/g, " ");
+  return WAKE_PHRASES.has(normalized);
+}
+
+function isStandbyCommand(command) {
+  const normalized = command.toLowerCase().trim()
+    .replace(/[.!?।]+$/g, "").replace(/\s+/g, " ");
+  return [
+    "sleep", "sleep mode", "go to sleep", "jarvis sleep",
+    "so jao", "so ja", "सो जाओ", "सो जा",
+  ].includes(normalized);
+}
 
 function setStatus(label, state = "ready") {
   elements.statusText.textContent = label;
@@ -187,13 +212,21 @@ async function sendCommand(rawCommand) {
     const data = await response.json();
     if (!response.ok) throw new Error(data.error || "Command failed.");
 
-    addMessage("assistant", data.message);
-    await speak(data.message);
+    const shouldStandby = data.action === "sleep_mode"
+      && voiceModeEnabled && isStandbyCommand(command);
+    const reply = shouldStandby
+      ? "Goodbye. Say Hey Jarvis to wake me."
+      : data.message;
+    addMessage("assistant", reply);
+    await speak(reply);
     await completeDeferredAction(data.follow_up);
     if (data.action === "sleep_mode") {
-      disableVoiceMode();
-      showToast("Voice mode is off. Click the microphone to listen again.");
-      setStatus("Voice mode off", "ready");
+      if (shouldStandby) {
+        await enterVoiceStandby();
+      } else {
+        disableVoiceMode();
+        setStatus("Voice mode off", "ready");
+      }
     }
     if (["add_reminder", "list_reminders", "start_my_day"].includes(data.action)) {
       await loadReminders();
@@ -206,7 +239,11 @@ async function sendCommand(rawCommand) {
     setBusy(false);
     if (voiceModeEnabled) {
       if (desktopVoiceAvailable) {
-        await resumeDesktopVoice();
+        if (voiceStandby) {
+          await enterVoiceStandby();
+        } else {
+          await resumeDesktopVoice();
+        }
         scheduleDesktopVoicePoll();
       } else {
         scheduleVoiceRestart();
@@ -312,9 +349,16 @@ function updateClock() {
 
 function updateVoiceModeUi() {
   elements.micButton.classList.toggle("voice-enabled", voiceModeEnabled);
+  elements.micButton.classList.toggle("voice-standby", voiceModeEnabled && voiceStandby);
   elements.micButton.setAttribute("aria-pressed", String(voiceModeEnabled));
 
-  if (voiceModeEnabled) {
+  if (voiceModeEnabled && voiceStandby) {
+    elements.micButton.setAttribute("aria-label", "Turn microphone fully off");
+    elements.micButton.title = "Turn microphone fully off";
+    elements.voiceStatus.textContent = "Standby";
+    elements.voiceSupport.textContent =
+      "Listening only for Hey Jarvis, Hello Jarvis, or Okay Jarvis. Click the mic to turn it off.";
+  } else if (voiceModeEnabled) {
     elements.micButton.setAttribute("aria-label", "Stop continuous voice input");
     elements.micButton.title = "Stop continuous voice input";
     elements.voiceStatus.textContent = "ON";
@@ -344,6 +388,7 @@ async function enableVoiceMode() {
       if (!response.ok) throw new Error(data.error || "Desktop voice could not start.");
       desktopVoiceEventCursor = Number(data.latest_event_id || 0);
       voiceModeEnabled = true;
+      voiceStandby = false;
       elements.micButton.disabled = false;
       updateVoiceModeUi();
       setStatus(data.state === "calibrating" ? "Calibrating" : "Listening", "listening");
@@ -387,6 +432,7 @@ async function enableVoiceMode() {
   }
 
   voiceModeEnabled = true;
+  voiceStandby = false;
   elements.micButton.disabled = false;
   updateVoiceModeUi();
   startVoiceRecognition();
@@ -394,6 +440,7 @@ async function enableVoiceMode() {
 
 function disableVoiceMode() {
   voiceModeEnabled = false;
+  voiceStandby = false;
   window.clearTimeout(voiceRestartTimer);
   window.clearTimeout(voiceCommitTimer);
   window.clearTimeout(desktopVoicePollTimer);
@@ -406,6 +453,21 @@ function disableVoiceMode() {
   elements.micButton.classList.remove("recording");
   updateVoiceModeUi();
   if (!isBusy) setStatus("Ready", "ready");
+}
+
+async function enterVoiceStandby() {
+  if (!voiceModeEnabled) return;
+  if (desktopVoiceAvailable) {
+    const response = await fetch("/api/voice/standby", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok || !data.enabled || !data.standby) {
+      disableVoiceMode();
+      throw new Error(data.error || "Could not enter standby; microphone turned off.");
+    }
+  }
+  voiceStandby = true;
+  updateVoiceModeUi();
+  setStatus("Standby", "standby");
 }
 
 async function pauseVoiceInput() {
@@ -422,7 +484,7 @@ async function pauseVoiceInput() {
 }
 
 async function resumeDesktopVoice() {
-  if (!desktopVoiceAvailable || !voiceModeEnabled) return;
+  if (!desktopVoiceAvailable || !voiceModeEnabled || voiceStandby) return;
   try {
     const response = await fetch("/api/voice/resume", { method: "POST" });
     if (!response.ok) throw new Error("Could not resume voice mode.");
@@ -451,32 +513,53 @@ async function pollDesktopVoice() {
     if (!response.ok) throw new Error(data.error || "Voice status is unavailable.");
 
     if (!data.enabled && voiceModeEnabled) {
+      for (const event of data.events || []) {
+        desktopVoiceEventCursor = Math.max(desktopVoiceEventCursor, Number(event.id || 0));
+        if (event.type === "error") showToast(event.message || "Microphone disconnected.");
+      }
+      setStatus("Reconnecting microphone", "thinking");
       const restartResponse = await fetch("/api/voice/start", { method: "POST" });
       const restarted = await restartResponse.json();
       if (!restartResponse.ok) {
         throw new Error(restarted.error || "Desktop voice could not restart.");
       }
       desktopVoiceEventCursor = Number(restarted.latest_event_id || 0);
+      if (voiceStandby) {
+        await enterVoiceStandby();
+      }
       setStatus(
-        restarted.state === "calibrating" ? "Calibrating" : "Listening",
-        "listening",
+        voiceStandby ? "Standby" : (restarted.state === "calibrating" ? "Calibrating" : "Listening"),
+        voiceStandby ? "standby" : "listening",
       );
       return;
     }
 
     if (data.state === "calibrating") {
       setStatus("Calibrating", "thinking");
+    } else if (data.state === "reconnecting") {
+      setStatus("Reconnecting microphone", "thinking");
     } else if (data.state === "transcribing") {
       setStatus("Converting speech to text", "thinking");
     } else if (data.state === "listening") {
       setStatus("Listening", "listening");
+    } else if (data.state === "standby") {
+      setStatus("Standby", "standby");
     }
 
     for (const event of data.events || []) {
+      if (!voiceModeEnabled) return;
       desktopVoiceEventCursor = Math.max(desktopVoiceEventCursor, Number(event.id || 0));
       if (event.type === "error") {
         showToast(event.message || "Speech recognition error.");
         continue;
+      }
+      if (event.type === "wake") {
+        voiceStandby = false;
+        updateVoiceModeUi();
+        addMessage("assistant", ACTIVATION_RESPONSE);
+        await speak(ACTIVATION_RESPONSE);
+        await resumeDesktopVoice();
+        return;
       }
       if (event.type === "transcript" && event.transcript) {
         elements.commandInput.value = event.transcript;
@@ -515,7 +598,19 @@ function commitVoiceCommand(rawTranscript) {
   } catch {
     // The final speech result is already captured, so sending can continue.
   }
+  if (voiceStandby) {
+    if (isWakePhrase(command)) void wakeBrowserVoice();
+    return;
+  }
   void sendCommand(command);
+}
+
+async function wakeBrowserVoice() {
+  voiceStandby = false;
+  updateVoiceModeUi();
+  addMessage("assistant", ACTIVATION_RESPONSE);
+  await speak(ACTIVATION_RESPONSE);
+  if (voiceModeEnabled) scheduleVoiceRestart();
 }
 
 function scheduleVoiceRestart(delay = 250) {
@@ -575,10 +670,9 @@ function configureVoiceRecognition() {
     recognitionActive = true;
     commandCaptured = false;
     voiceTranscript = "";
-    elements.micButton.classList.add("recording");
-    elements.voiceStatus.textContent = "Listening";
-    elements.voiceSupport.textContent = "Always listening is on. Speak a command.";
-    setStatus("Listening", "listening");
+    elements.micButton.classList.toggle("recording", !voiceStandby);
+    updateVoiceModeUi();
+    setStatus(voiceStandby ? "Standby" : "Listening", voiceStandby ? "standby" : "listening");
   };
   recognition.onresult = (event) => {
     if (commandCaptured || isBusy || isSpeaking) return;
@@ -592,7 +686,7 @@ function configureVoiceRecognition() {
     }
 
     voiceTranscript = transcript.trim();
-    elements.commandInput.value = voiceTranscript;
+    if (!voiceStandby) elements.commandInput.value = voiceTranscript;
     if (!voiceTranscript) return;
 
     if (hasFinalResult) {
@@ -643,7 +737,9 @@ function configureVoiceRecognition() {
     }
 
     if (voiceModeEnabled) {
-      if (!isBusy && !isSpeaking) setStatus("Listening", "listening");
+      if (!isBusy && !isSpeaking) {
+        setStatus(voiceStandby ? "Standby" : "Listening", voiceStandby ? "standby" : "listening");
+      }
       scheduleVoiceRestart();
     } else if (!isBusy) {
       setStatus("Ready", "ready");
@@ -686,6 +782,7 @@ elements.reminderForm.addEventListener("submit", async (event) => {
 window.addEventListener("pagehide", () => {
   const desktopWasEnabled = desktopVoiceAvailable && voiceModeEnabled;
   voiceModeEnabled = false;
+  voiceStandby = false;
   window.clearTimeout(voiceRestartTimer);
   window.clearTimeout(desktopVoicePollTimer);
   if (desktopWasEnabled) {
