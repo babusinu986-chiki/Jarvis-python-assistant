@@ -215,6 +215,5 @@ The test suite uses dry-run mode, so it does not open websites or call the news 
 
 ## Responsible development
 
-This project was built as a learning project with assistance from AI coding tools.
-The architecture, integration, testing, and final behavior should be reviewed and
-understood by the repository owner before publishing or demonstrating it.
+This project was built as a learning project coded by me with the help of some AI coding tools.
+
